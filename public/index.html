@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Net Files</title>
+    <style>
+      .inputs > div {
+        margin: 0.5rem;
+      }
+      .file-size::before {
+        content: '(';
+      }
+      .file-size::after {
+        content: ')';
+      }
+    </style>
+  </head>
+  <body>
+    <h1>net-files</h1>
+    <div class="inputs">
+      <div>
+        <label>
+          slug:
+          <input type="text" id="slugInput" />
+        </label>
+      </div>
+      <div>
+        <input type="file" id="fileInput" multiple />
+      </div>
+      <div>
+        <button onclick="share()">share</button>
+        <button onclick="retrieve()">retrieve</button>
+      </div>
+    </div>
+    <h2>File List</h2>
+    <div id="fileList">
+      <div class="file">
+        <span class="file-name">sample.zip</span>
+        <span class="file-size">1.5MB</span>
+        <button class="download-button">download</button>
+        <span class="seeding">(seeding)</span>
+      </div>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      let socket = io()
+      socket.connect()
+      if (slugInput.value) {
+        if (fileInput.files.length > 0) {
+          share()
+        } else {
+          retrieve()
+        }
+      }
+      function share() {
+        let slug = slugInput.value
+        if (!slug) {
+          alert('please select a slug to serve as share key')
+          return
+        }
+        socket.emit('join', slug)
+        for (let file of fileInput.files) {
+          socket.emit('has', { slug, name: file.name, size: file.size })
+        }
+      }
+      function retrieve() {
+        let slug = slugInput.value
+        if (!slug) {
+          alert('please select a slug to serve as share key')
+          return
+        }
+        socket.emit('join', slug)
+      }
+      let fileTemplate = fileList.children[0]
+      fileTemplate.remove()
+      socket.on('has', ({ slug, name, size }) => {
+        if (slug != slugInput.value) {
+          socket.emit('leave', slug)
+          return
+        }
+        let node = fileList.querySelector(
+          `.file[data-name="${name}"][data-size="${size}"]`,
+        )
+        if (node) {
+          node.remove()
+        }
+        node = fileTemplate.cloneNode(true)
+        node.dataset.name = name
+        node.dataset.size = size
+        node.querySelector('.file-name').textContent = name
+        node.querySelector('.file-size').textContent = formatSize(size)
+        let downloadButton = node.querySelector('.download-button')
+        let seeding = node.querySelector('.seeding')
+        let file = findFile({ name, size })
+        downloadButton.hidden = !!file
+        seeding.hidden = !file
+        downloadButton.onclick = () => {
+          downloadFile({ slug, name, size })
+        }
+        fileList.appendChild(node)
+      })
+      function downloadFile({ slug, name, size }) {
+        // TODO download by chunk
+        let offset = 0
+        socket.emit('ask', { slug, name, size, offset })
+      }
+      socket.on('ask', ({ slug, name, size, offset }) => {
+        if (slug != slugInput.value) {
+          socket.emit('leave', slug)
+          return
+        }
+        let file = findFile({ name, size })
+        if (!file) return
+        // TODO upload by chunk
+      })
+      socket.on('content', ({ slug, name, size, offset }) => {
+        if (slug != slugInput.value) {
+          socket.emit('leave', slug)
+          return
+        }
+        let file = findFile({ name, size })
+        if (!file) return
+        // TODO download by chunk
+      })
+      function findFile({ name, size }) {
+        for (let file of fileInput.files) {
+          if (file.name == name && file.size == size) return file
+        }
+      }
+      function formatSize(size) {
+        if (size < 1e3) return size + 'B'
+        if (size < 1e6) return (size / 1e3).toFixed(2) + 'KB'
+        if (size < 1e9) return (size / 1e6).toFixed(2) + 'MB'
+        return (size / 1e9).toFixed(2) + 'GB'
+      }
+    </script>
+  </body>
+</html>
