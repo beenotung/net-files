@@ -39,6 +39,7 @@
       <div class="file">
         <span class="file-name">sample.zip</span>
         <span class="file-size">1.5MB</span>
+        <span class="seeding">(seeding)</span>
         <button class="download-button">download</button>
         <div class="progress-container">
           <div>
@@ -47,20 +48,31 @@
           <progress></progress>
         </div>
         <button class="save-button">save</button>
-        <span class="seeding">(seeding)</span>
       </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script>
       let socket = io()
       socket.connect()
-      if (slugInput.value) {
-        if (fileInput.files.length > 0) {
-          share()
-        } else {
-          retrieve()
+      function autoSync() {
+        if (slugInput.value) {
+          if (fileInput.files.length > 0) {
+            share()
+          } else {
+            retrieve()
+          }
         }
       }
+      slugInput.value = location.hash.replace('#', '') || slugInput.value
+      slugInput.addEventListener('change', () => {
+        location.hash = slugInput.value
+        autoSync()
+      })
+      window.addEventListener('hashchange', () => {
+        slugInput.value = location.hash.replace('#', '')
+        autoSync()
+      })
+      autoSync()
       function share() {
         let slug = slugInput.value
         if (!slug) {
@@ -69,24 +81,29 @@
         }
         socket.emit('join', slug)
         for (let file of fileInput.files) {
-          socket.emit('has', {
-            slug,
-            name: file.name,
-            size: file.size,
-            type: file.type,
-            lastModified: file.lastModified,
+          seedFile(file)
+        }
+      }
+      function seedFile(file) {
+        let slug = slugInput.value
+        console.log('seeding:', { slug, file })
+        socket.emit('has', {
+          slug,
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          lastModified: file.lastModified,
+        })
+        file.getContent = () => {
+          return new Promise(resolve => {
+            let reader = new FileReader()
+            reader.onload = () => {
+              let content = reader.result
+              resolve(content)
+              file.getContent = () => content
+            }
+            reader.readAsArrayBuffer(file)
           })
-          file.getContent = () => {
-            return new Promise(resolve => {
-              let reader = new FileReader()
-              reader.onload = () => {
-                let content = reader.result
-                resolve(content)
-                file.getContent = () => content
-              }
-              reader.readAsArrayBuffer(file)
-            })
-          }
         }
       }
       function retrieve() {
@@ -104,11 +121,9 @@
           socket.emit('leave', slug)
           return
         }
-        let node = fileList.querySelector(
-          `.file[data-name="${name}"][data-size="${size}"]`,
-        )
+        let node = findFileNode({ name, size })
         if (node) {
-          node.remove()
+          return
         }
         node = fileTemplate.cloneNode(true)
         node.dataset.name = name
@@ -136,7 +151,6 @@
           let offset = 0
           socket.emit('want', { slug, name, size, offset })
           receivedSizeSpan.textContent = formatSize(offset)
-          // TODO download by chunk
         }
         node.onContent = ({ offset, buffer }) => {
           let src = new Uint8Array(buffer)
@@ -144,7 +158,6 @@
           for (let i = 0; i < src.length; i++) {
             dest[offset + i] = src[i]
           }
-          // TODO download by chunk
           let receivedSize = offset + src.length
           progressBar.value = receivedSize
           receivedSizeSpan.textContent = formatSize(receivedSize)
@@ -153,12 +166,15 @@
             socket.emit('want', { slug, name, size, offset })
             return
           }
+          console.log('downloaded:', { slug, name, size })
           saveButton.disabled = false
           let arrayBuffer = new Uint8Array(node.buffer)
           let file = new File([arrayBuffer], name, { type, lastModified })
           node.buffer = []
-          console.log('done:', { slug, name, size, file, node })
           node.file = file
+          seedFile(file)
+          downloadButton.hidden = true
+          seedingSpan.hidden = false
           saveButton.onclick = () => {
             let url = URL.createObjectURL(file)
             let a = document.createElement('a')
@@ -204,6 +220,7 @@
         for (let file of fileInput.files) {
           if (file.name == name && file.size == size) return file
         }
+        return findFileNode({ name, size })?.file
       }
       function findFileNode({ name, size }) {
         for (let node of fileList.children) {
