@@ -27,7 +27,12 @@
         </label>
       </div>
       <div>
-        <input type="file" id="fileInput" multiple />
+        <input
+          type="file"
+          id="fileInput"
+          multiple
+          onchange="updateFileList()"
+        />
       </div>
       <div>
         <button onclick="share()">share</button>
@@ -74,6 +79,16 @@
         autoSync()
       })
       autoSync()
+      function updateFileList() {
+        for (let node of fileList.children) {
+          // check for receiving files
+          if (node.buffer) continue
+          // check for received files
+          if (node.file) continue
+          node.remove()
+        }
+        share()
+      }
       function share() {
         let slug = slugInput.value
         if (!slug) {
@@ -83,6 +98,12 @@
         socket.emit('join', slug)
         for (let file of fileInput.files) {
           seedFile(file)
+        }
+        for (let node of fileList.children) {
+          let file = node.file
+          if (file) {
+            seedFile(file)
+          }
         }
       }
       function seedFile(file) {
