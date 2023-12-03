@@ -15,6 +15,9 @@
       .file-size::after {
         content: ')';
       }
+      .file {
+        margin-bottom: 1rem;
+      }
     </style>
   </head>
   <body>
@@ -47,6 +50,13 @@
         <span class="seeding">(seeding)</span>
         <button class="download-button">download</button>
         <button class="remove-button">remove</button>
+        <div class="remove-menu">
+          <button class="remove-from-me-button">remove from me</button>
+          <button class="remove-from-network-button">
+            remove from network
+          </button>
+          <button class="cancel-remove-button">cancel removal</button>
+        </div>
         <div class="progress-container">
           <div>
             <span class="received-size"></span>/<span class="total-size"></span>
@@ -154,6 +164,23 @@
         node.querySelector('.file-size').textContent = formatSize(size)
         let downloadButton = node.querySelector('.download-button')
         let removeButton = node.querySelector('.remove-button')
+        let removeMenu = node.querySelector('.remove-menu')
+        node.querySelector('.remove-from-me-button').onclick = () => {
+          node.remove()
+        }
+        node.querySelector('.remove-from-network-button').onclick = () => {
+          socket.emit('remove', { slug, name })
+          node.remove()
+        }
+        removeMenu.hidden = true
+        removeButton.onclick = () => {
+          removeButton.hidden = true
+          removeMenu.hidden = false
+        }
+        node.querySelector('.cancel-remove-button').onclick = () => {
+          removeButton.hidden = false
+          removeMenu.hidden = true
+        }
         let saveButton = node.querySelector('.save-button')
         let progressContainer = node.querySelector('.progress-container')
         let receivedSizeSpan = node.querySelector('.received-size')
@@ -211,10 +238,6 @@
             })
           }
         }
-        removeButton.onclick = () => {
-          socket.emit('remove', { slug, name })
-          node.remove()
-        }
         fileList.appendChild(node)
       })
 
@@ -226,7 +249,7 @@
         let file = findFile({ name, size })
         if (!file) return
         let arrayBuffer = await file.getContent()
-        let bufferSize = 500e3
+        let bufferSize = 200e3
         let buffer = new Uint8Array(
           arrayBuffer.slice(offset, offset + bufferSize),
         )
