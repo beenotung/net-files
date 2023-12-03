@@ -52,7 +52,10 @@ app.use(express.static('public'))
 app.use(express.json())
 app.use(express.urlencoded({ extended: false }))
 
-let port = 8100
+let port = +process.env.PORT! || 8100
+for (let arg of process.argv.slice(2)) {
+  port = +arg || port
+}
 server.listen(port, () => {
   print(port)
 })
