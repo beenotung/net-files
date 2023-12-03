@@ -41,6 +41,7 @@
         <span class="file-size">1.5MB</span>
         <span class="seeding">(seeding)</span>
         <button class="download-button">download</button>
+        <button class="remove-button">remove</button>
         <div class="progress-container">
           <div>
             <span class="received-size"></span>/<span class="total-size"></span>
@@ -131,6 +132,7 @@
         node.querySelector('.file-name').textContent = name
         node.querySelector('.file-size').textContent = formatSize(size)
         let downloadButton = node.querySelector('.download-button')
+        let removeButton = node.querySelector('.remove-button')
         let saveButton = node.querySelector('.save-button')
         let progressContainer = node.querySelector('.progress-container')
         let receivedSizeSpan = node.querySelector('.received-size')
@@ -187,6 +189,10 @@
               URL.revokeObjectURL(url)
             })
           }
+        }
+        removeButton.onclick = () => {
+          socket.emit('remove', { slug, name })
+          node.remove()
         }
         fileList.appendChild(node)
       })

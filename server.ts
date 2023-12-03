@@ -42,6 +42,12 @@ io.on('connection', socket => {
     room[name] = fileMeta
     io.to('slug:' + slug).emit('has', data)
   })
+  socket.on('remove', ({ slug, name }) => {
+    let room = rooms[slug]
+    if (room) {
+      delete room[name]
+    }
+  })
   function forwardData(event: string) {
     socket.on(event, async data => {
       let sockets = await io.in('slug:' + data.slug).fetchSockets()
