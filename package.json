@@ -9,10 +9,10 @@
     "file",
     "files",
     "share",
+    "websocket",
     "p2p",
     "cross-platform",
     "no-install",
-    "lightweight",
     "net-file"
   ],
   "author": {
