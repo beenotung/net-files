@@ -3,6 +3,7 @@ import { print } from 'listening-on'
 import socketIO from 'socket.io'
 import http from 'http'
 import { config } from 'dotenv'
+import { join } from 'path'
 
 config()
 let port = +process.env.PORT! || 8100
@@ -61,7 +62,7 @@ io.on('connection', socket => {
   forwardData('content')
 })
 
-app.use(express.static('public'))
+app.use(express.static(join(__dirname, '..', 'public')))
 app.use(express.json())
 app.use(express.urlencoded({ extended: false }))
 
