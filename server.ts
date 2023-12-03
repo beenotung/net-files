@@ -2,6 +2,13 @@ import express from 'express'
 import { print } from 'listening-on'
 import socketIO from 'socket.io'
 import http from 'http'
+import { config } from 'dotenv'
+
+config()
+let port = +process.env.PORT! || 8100
+for (let arg of process.argv.slice(2)) {
+  port = +arg || port
+}
 
 let app = express()
 let server = http.createServer(app)
@@ -52,10 +59,6 @@ app.use(express.static('public'))
 app.use(express.json())
 app.use(express.urlencoded({ extended: false }))
 
-let port = +process.env.PORT! || 8100
-for (let arg of process.argv.slice(2)) {
-  port = +arg || port
-}
 server.listen(port, () => {
   print(port)
 })
