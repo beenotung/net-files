@@ -26,6 +26,10 @@
     "net-files": "./cli.js",
     "net-file": "./cli.js"
   },
+  "files": [
+    "dist",
+    "public"
+  ],
   "scripts": {
     "start": "ts-node-dev server.ts",
     "test": "tsc --noEmit",
