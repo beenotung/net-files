@@ -1,8 +1,20 @@
 {
   "name": "net-files",
   "version": "0.0.0",
-  "description": "",
-  "keywords": [],
+  "description": "Share files in browser in p2p manner. The file is not stored on the server.",
+  "keywords": [
+    "cli",
+    "npx",
+    "network",
+    "file",
+    "files",
+    "share",
+    "p2p",
+    "cross-platform",
+    "no-install",
+    "lightweight",
+    "net-file"
+  ],
   "author": {
     "name": "Beeno Tung",
     "email": "aabbcc1241@yahoo.com.hk",
@@ -11,7 +23,8 @@
   "license": "BSD-2-Clause",
   "main": "index.js",
   "bin": {
-    "net-files": "./cli.js"
+    "net-files": "./cli.js",
+    "net-file": "./cli.js"
   },
   "scripts": {
     "start": "ts-node-dev server.ts",
