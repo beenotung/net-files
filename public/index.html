@@ -40,6 +40,13 @@
         <span class="file-name">sample.zip</span>
         <span class="file-size">1.5MB</span>
         <button class="download-button">download</button>
+        <div class="progress-container">
+          <div>
+            <span class="received-size"></span>/<span class="total-size"></span>
+          </div>
+          <progress></progress>
+        </div>
+        <button class="save-button">save</button>
         <span class="seeding">(seeding)</span>
       </div>
     </div>
@@ -62,7 +69,24 @@
         }
         socket.emit('join', slug)
         for (let file of fileInput.files) {
-          socket.emit('has', { slug, name: file.name, size: file.size })
+          socket.emit('has', {
+            slug,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            lastModified: file.lastModified,
+          })
+          file.getContent = () => {
+            return new Promise(resolve => {
+              let reader = new FileReader()
+              reader.onload = () => {
+                let content = reader.result
+                resolve(content)
+                file.getContent = () => content
+              }
+              reader.readAsArrayBuffer(file)
+            })
+          }
         }
       }
       function retrieve() {
@@ -75,7 +99,7 @@
       }
       let fileTemplate = fileList.children[0]
       fileTemplate.remove()
-      socket.on('has', ({ slug, name, size }) => {
+      socket.on('has', ({ slug, name, size, type, lastModified }) => {
         if (slug != slugInput.value) {
           socket.emit('leave', slug)
           return
@@ -92,41 +116,100 @@
         node.querySelector('.file-name').textContent = name
         node.querySelector('.file-size').textContent = formatSize(size)
         let downloadButton = node.querySelector('.download-button')
-        let seeding = node.querySelector('.seeding')
+        let saveButton = node.querySelector('.save-button')
+        let progressContainer = node.querySelector('.progress-container')
+        let receivedSizeSpan = node.querySelector('.received-size')
+        let progressBar = node.querySelector('progress')
+        node.querySelector('.total-size').textContent = formatSize(size)
+        progressBar.max = size
+        let seedingSpan = node.querySelector('.seeding')
         let file = findFile({ name, size })
+        node.buffer = []
+        progressContainer.hidden = true
         downloadButton.hidden = !!file
-        seeding.hidden = !file
+        seedingSpan.hidden = !file
+        saveButton.hidden = true
         downloadButton.onclick = () => {
-          downloadFile({ slug, name, size })
+          progressContainer.hidden = false
+          saveButton.hidden = false
+          saveButton.disabled = true
+          let offset = 0
+          socket.emit('want', { slug, name, size, offset })
+          receivedSizeSpan.textContent = formatSize(offset)
+          // TODO download by chunk
+        }
+        node.onContent = ({ offset, buffer }) => {
+          let src = new Uint8Array(buffer)
+          let dest = node.buffer
+          for (let i = 0; i < src.length; i++) {
+            dest[offset + i] = src[i]
+          }
+          // TODO download by chunk
+          let receivedSize = offset + src.length
+          progressBar.value = receivedSize
+          receivedSizeSpan.textContent = formatSize(receivedSize)
+          if (src.length > 0) {
+            offset += src.length
+            socket.emit('want', { slug, name, size, offset })
+            return
+          }
+          saveButton.disabled = false
+          let arrayBuffer = new Uint8Array(node.buffer)
+          let file = new File([arrayBuffer], name, { type, lastModified })
+          node.buffer = []
+          console.log('done:', { slug, name, size, file, node })
+          node.file = file
+          saveButton.onclick = () => {
+            let url = URL.createObjectURL(file)
+            let a = document.createElement('a')
+            a.download = name
+            a.href = url
+            document.body.appendChild(a)
+            a.click()
+            setTimeout(() => {
+              a.remove()
+              URL.revokeObjectURL(url)
+            })
+          }
         }
         fileList.appendChild(node)
       })
-      function downloadFile({ slug, name, size }) {
-        // TODO download by chunk
-        let offset = 0
-        socket.emit('ask', { slug, name, size, offset })
-      }
-      socket.on('ask', ({ slug, name, size, offset }) => {
+
+      socket.on('want', async ({ slug, name, size, offset }) => {
         if (slug != slugInput.value) {
           socket.emit('leave', slug)
           return
         }
         let file = findFile({ name, size })
         if (!file) return
-        // TODO upload by chunk
+        let arrayBuffer = await file.getContent()
+        let bufferSize = 1e6
+        let buffer = new Uint8Array(
+          arrayBuffer.slice(offset, offset + bufferSize),
+        )
+        socket.emit('content', { slug, name, size, offset, buffer })
       })
-      socket.on('content', ({ slug, name, size, offset }) => {
+      socket.on('content', ({ slug, name, size, offset, buffer }) => {
         if (slug != slugInput.value) {
           socket.emit('leave', slug)
           return
         }
         let file = findFile({ name, size })
-        if (!file) return
-        // TODO download by chunk
+        if (file) return
+        let node = findFileNode({ name, size })
+        if (!node) return
+        node.onContent({ offset, buffer })
       })
       function findFile({ name, size }) {
         for (let file of fileInput.files) {
           if (file.name == name && file.size == size) return file
+        }
+      }
+      function findFileNode({ name, size }) {
+        for (let node of fileList.children) {
+          if (node.dataset.name == name && node.dataset.size == size) {
+            return node
+          }
         }
       }
       function formatSize(size) {
