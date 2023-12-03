@@ -1,6 +1,6 @@
 {
   "name": "net-files",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Share files in browser in p2p manner. The file is not stored on the server.",
   "keywords": [
     "cli",
