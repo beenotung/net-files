@@ -21,6 +21,12 @@
       h1 sub {
         font-size: 1rem;
       }
+      code {
+        display: inline-block;
+        background-color: lightgray;
+        padding: 0.2rem;
+        border-radius: 0.2rem;
+      }
     </style>
   </head>
   <body>
@@ -33,10 +39,6 @@
       </sub>
     </h1>
     <p>P2P file sharing.</p>
-    <p>
-      Remark: the files are not stored on the server. The browser should be kept
-      open when seeding files.
-    </p>
     <div class="inputs">
       <div>
         <label>
@@ -81,6 +83,17 @@
         <button class="save-button">save</button>
       </div>
     </div>
+    <h2>About</h2>
+    <p>
+      Remark: the files are not stored on the server. The browser should be kept
+      open when seeding files.
+    </p>
+    <p>
+      Tips: you can share files among local network for faster transmission by
+      running
+      <code>npx net-files</code>
+      in the terminal.
+    </p>
     <script src="/socket.io/socket.io.js"></script>
     <script>
       let socket = io()
