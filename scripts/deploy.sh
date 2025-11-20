@@ -2,9 +2,24 @@
 set -e
 set -o pipefail
 
-npm run build
+source "./.env"
 
-source .env
+if [ -z "$HOST" ]; then
+  echo "HOST is not set"
+  exit 1
+fi
+
+if [ -z "$USER" ]; then
+  echo "USER is not set"
+  exit 1
+fi
+
+if [ -z "$PROJECT_DIR" ]; then
+  echo "PROJECT_DIR is not set"
+  exit 1
+fi
+
+npm run build
 
 rsync -SavLPz \
   package.json \
