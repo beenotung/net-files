@@ -222,133 +222,290 @@
         node.receivedSize = 0
         node.fileHandle = null
         node.writableStream = null
+        node.lastWriteOffset = 0 // Track write position for streaming
         node.chunks = [] // Fallback: store chunks if File System Access API not available
         progressContainer.hidden = true
         downloadButton.hidden = !!file
         seedingSpan.hidden = !file
-        saveButton.hidden = true
+        // Show save button for files that are already available locally (seeding)
+        if (file) {
+          saveButton.hidden = false
+          saveButton.disabled = false
+          saveButton.onclick = () => {
+            let url = URL.createObjectURL(file)
+            let a = document.createElement('a')
+            a.download = name
+            a.href = url
+            document.body.appendChild(a)
+            a.click()
+            setTimeout(() => {
+              a.remove()
+              URL.revokeObjectURL(url)
+            })
+          }
+        } else {
+          saveButton.hidden = true
+        }
+        // Helper function to clean up streams
+        async function cleanupStreams() {
+          if (node.writableStream) {
+            try {
+              await node.writableStream.close()
+            } catch (err) {
+              console.warn('Error closing existing stream:', err)
+            }
+            node.writableStream = null
+          }
+          node.fileHandle = null
+          node.lastWriteOffset = 0
+          node.chunks = null
+        }
+
+        // Helper function to setup File System API
+        async function setupFileSystemAPI() {
+          if (!('showSaveFilePicker' in window)) {
+            return false
+          }
+
+          try {
+            node.fileHandle = await window.showSaveFilePicker({
+              suggestedName: name,
+            })
+            node.writableStream = await node.fileHandle.createWritable()
+            node.lastWriteOffset = 0
+            node.chunks = null
+            console.log(
+              `[File System API] Using File System Access API for streaming: ${name} (${formatSize(
+                size,
+              )})`,
+            )
+            return true
+          } catch (err) {
+            // User cancelled - abort download
+            if (err.name === 'AbortError' || err.name === 'NotAllowedError') {
+              console.log(
+                `[Aborted] User cancelled file save dialog for: ${name}`,
+              )
+              node.downloadAborted = true
+              progressContainer.hidden = true
+              saveButton.hidden = true
+              downloadButton.hidden = false
+              return null // Signal abort
+            }
+            // Other error - fall back
+            console.warn(
+              '[Fallback Mode] File System Access API unavailable, using in-memory fallback:',
+              err,
+            )
+            console.log(
+              `[Fallback Mode] Will store chunks in memory: ${name} (${formatSize(
+                size,
+              )})`,
+            )
+            node.fileHandle = null
+            node.writableStream = null
+            node.chunks = []
+            return false
+          }
+        }
+
+        // Helper function to setup fallback mode
+        function setupFallbackMode() {
+          console.log(
+            `[Fallback Mode] File System Access API not supported in this browser: ${name} (${formatSize(
+              size,
+            )})`,
+          )
+          if (size > 500e6) {
+            alert(
+              'Large file detected. File System Access API not supported in this browser. Download may fail for files larger than available RAM.',
+            )
+          }
+          node.chunks = []
+        }
+
         downloadButton.onclick = async () => {
           progressContainer.hidden = false
           saveButton.hidden = false
           saveButton.disabled = true
+          node.downloadAborted = false
 
-          // Try to use File System Access API for streaming to disk
-          if ('showSaveFilePicker' in window) {
-            try {
-              node.fileHandle = await window.showSaveFilePicker({
-                suggestedName: name,
-              })
-              node.writableStream = await node.fileHandle.createWritable()
-              node.chunks = null // Clear chunks array, using streaming instead
-            } catch (err) {
-              // User cancelled or error, fall back to in-memory approach
-              console.warn('File System Access API not available, using in-memory fallback:', err)
-              node.fileHandle = null
-              node.writableStream = null
-              node.chunks = []
-            }
-          } else {
-            // Browser doesn't support File System Access API
-            // For files larger than a threshold, we'll need a different approach
-            // For now, use chunks array but this will still have RAM limitations
-            if (size > 500e6) { // 500MB threshold
-              alert('Large file detected. File System Access API not supported in this browser. Download may fail for files larger than available RAM.')
-            }
-            node.chunks = []
+          await cleanupStreams()
+
+          // Try to setup File System API, or fall back to memory
+          const fsApiAvailable = 'showSaveFilePicker' in window
+          const fsApiResult = fsApiAvailable
+            ? await setupFileSystemAPI()
+            : false
+
+          // Handle abort
+          if (fsApiResult === null) {
+            return
           }
 
+          // Setup fallback if File System API not available or failed
+          if (!fsApiResult) {
+            setupFallbackMode()
+          }
+
+          // Start download
           node.receivedSize = 0
           socket.emit('want', { slug, name, size, offset: node.receivedSize })
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
         }
+        // Helper function to switch from stream to memory fallback
+        async function switchToMemoryFallback() {
+          if (node.writableStream) {
+            try {
+              await node.writableStream.close()
+            } catch (err) {
+              console.error('Error closing stream:', err)
+            }
+            node.writableStream = null
+            node.fileHandle = null
+          }
+          if (!node.chunks) node.chunks = []
+        }
+
+        // Helper function to write chunk to File System API
+        async function writeToStream(src, offset) {
+          if (offset !== node.lastWriteOffset) {
+            console.warn(
+              '[Fallback Mode] Out of order chunk detected, falling back to in-memory storage',
+            )
+            console.log(
+              `[Fallback Mode] Switching to in-memory chunks for: ${name}`,
+            )
+            await switchToMemoryFallback()
+            return false
+          }
+          await node.writableStream.write(src)
+          node.lastWriteOffset = offset + src.length
+          return true
+        }
+
+        // Helper function to store chunk in memory
+        function storeInMemory(src, offset) {
+          if (!node.chunks) node.chunks = []
+          node.chunks.push({ offset, buffer: src.buffer.slice() })
+        }
+
+        // Helper function to create save button handler
+        function createSaveButtonHandler(fileSource) {
+          if (node.fileHandle) {
+            // File System API - read from disk handle
+            return async () => {
+              try {
+                const file = await node.fileHandle.getFile()
+                downloadFile(file)
+              } catch (err) {
+                console.error('Error accessing file:', err)
+                alert(
+                  'Error accessing saved file. It may have been moved or deleted.',
+                )
+              }
+            }
+          } else {
+            // Memory fallback - use file directly
+            return () => downloadFile(fileSource)
+          }
+        }
+
+        function downloadFile(file) {
+          const url = URL.createObjectURL(file)
+          const a = document.createElement('a')
+          a.download = name
+          a.href = url
+          document.body.appendChild(a)
+          a.click()
+          setTimeout(() => {
+            a.remove()
+            URL.revokeObjectURL(url)
+          })
+        }
+
+        // Helper function to complete download
+        async function completeDownload() {
+          console.log('downloaded:', { slug, name, size })
+          let file
+
+          if (node.writableStream) {
+            // File System API completion
+            await node.writableStream.close()
+            node.writableStream = null
+            const fileData = await node.fileHandle.getFile()
+            file = fileData
+            console.log(
+              `[File System API] Download completed using File System Access API: ${name}`,
+            )
+          } else if (node.chunks?.length > 0) {
+            // Memory fallback completion
+            console.log(
+              `[Fallback Mode] Reconstructing file from chunks in memory: ${name} (${node.chunks.length} chunks)`,
+            )
+            node.chunks.sort((a, b) => a.offset - b.offset)
+            const fileBlob = new Blob(
+              node.chunks.map(chunk => chunk.buffer),
+              { type },
+            )
+            file = new File([fileBlob], name, { type, lastModified })
+            node.chunks = null
+            console.log(
+              `[Fallback Mode] Download completed using in-memory fallback: ${name}`,
+            )
+          } else {
+            return // No file to complete
+          }
+
+          node.file = file
+          seedFile(file)
+          downloadButton.hidden = true
+          seedingSpan.hidden = false
+          saveButton.disabled = false
+          saveButton.onclick = createSaveButtonHandler(file)
+        }
+
         node.onContent = async ({ offset, buffer }) => {
-          let src = new Uint8Array(buffer)
+          if (node.downloadAborted) {
+            console.log(
+              `[Aborted] Ignoring chunk for aborted download: ${name}`,
+            )
+            return
+          }
+
+          const src = new Uint8Array(buffer)
           node.receivedSize = offset + src.length
           progressBar.value = node.receivedSize
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
 
-          // Write chunk directly to disk if using File System Access API
+          // Write chunk to appropriate storage
           if (node.writableStream) {
             try {
-              await node.writableStream.write({ type: 'write', position: offset, data: src })
+              await writeToStream(src, offset)
             } catch (err) {
-              console.error('Error writing chunk:', err)
-              await node.writableStream.close()
-              node.writableStream = null
-              saveButton.disabled = false
-              return
+              console.error('[Fallback Mode] Error writing chunk:', err)
+              console.log(
+                `[Fallback Mode] Switching to in-memory chunks due to error for: ${name}`,
+              )
+              await switchToMemoryFallback()
             }
-          } else if (node.chunks) {
-            // Fallback: store chunk in memory
-            node.chunks.push({ offset, buffer: src.buffer.slice() })
           }
 
-          if (src.length > 0 && node.receivedSize < size) {
+          // Store in memory if not using stream or if stream failed
+          if (!node.writableStream && node.chunks) {
+            storeInMemory(src, offset)
+          }
+
+          // Request next chunk if download is in progress
+          const hasMore = src.length > 0 && node.receivedSize < size
+          if (hasMore && !node.downloadAborted) {
             socket.emit('want', { slug, name, size, offset: node.receivedSize })
             return
           }
 
-          if (node.receivedSize >= size) {
-            console.log('downloaded:', { slug, name, size })
-
-            if (node.writableStream) {
-              // Close the stream and get the file handle
-              await node.writableStream.close()
-              node.writableStream = null
-              saveButton.disabled = false
-
-              // Read file from disk to create File object for seeding
-              node.fileHandle = node.fileHandle
-              const fileData = await node.fileHandle.getFile()
-              node.file = fileData
-              seedFile(fileData)
-              downloadButton.hidden = true
-              seedingSpan.hidden = false
-
-              saveButton.onclick = async () => {
-                // Re-open the saved file and download it
-                try {
-                  const file = await node.fileHandle.getFile()
-                  const url = URL.createObjectURL(file)
-                  const a = document.createElement('a')
-                  a.download = name
-                  a.href = url
-                  document.body.appendChild(a)
-                  a.click()
-                  setTimeout(() => {
-                    a.remove()
-                    URL.revokeObjectURL(url)
-                  })
-                } catch (err) {
-                  console.error('Error accessing file:', err)
-                  alert('Error accessing saved file. It may have been moved or deleted.')
-                }
-              }
-            } else if (node.chunks && node.chunks.length > 0) {
-              // Fallback: reconstruct file from chunks in memory
-              // This will still have RAM limitations for very large files
-              node.chunks.sort((a, b) => a.offset - b.offset)
-              let fileBlob = new Blob(node.chunks.map(chunk => chunk.buffer), { type })
-              let file = new File([fileBlob], name, { type, lastModified })
-              node.chunks = null
-              node.file = file
-              seedFile(file)
-              downloadButton.hidden = true
-              seedingSpan.hidden = false
-
-              saveButton.onclick = () => {
-                let url = URL.createObjectURL(file)
-                let a = document.createElement('a')
-                a.download = name
-                a.href = url
-                document.body.appendChild(a)
-                a.click()
-                setTimeout(() => {
-                  a.remove()
-                  URL.revokeObjectURL(url)
-                })
-              }
-            }
+          // Complete download if finished
+          if (node.receivedSize >= size && !node.downloadAborted) {
+            await completeDownload()
           }
         }
         fileList.appendChild(node)
