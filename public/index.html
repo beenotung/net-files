@@ -154,15 +154,17 @@
           type: file.type,
           lastModified: file.lastModified,
         })
-        file.getContent = () => {
+        file.readChunk = (offset, length) => {
           return new Promise(resolve => {
             let reader = new FileReader()
             reader.onload = () => {
-              let content = reader.result
-              resolve(content)
-              file.getContent = () => content
+              resolve(reader.result)
             }
-            reader.readAsArrayBuffer(file)
+            reader.onerror = () => {
+              resolve(null)
+            }
+            let blob = file.slice(offset, offset + length)
+            reader.readAsArrayBuffer(blob)
           })
         }
       }
@@ -217,53 +219,136 @@
         progressBar.max = size
         let seedingSpan = node.querySelector('.seeding')
         let file = findFile({ name, size })
-        node.buffer = []
+        node.receivedSize = 0
+        node.fileHandle = null
+        node.writableStream = null
+        node.chunks = [] // Fallback: store chunks if File System Access API not available
         progressContainer.hidden = true
         downloadButton.hidden = !!file
         seedingSpan.hidden = !file
         saveButton.hidden = true
-        downloadButton.onclick = () => {
+        downloadButton.onclick = async () => {
           progressContainer.hidden = false
           saveButton.hidden = false
           saveButton.disabled = true
-          let offset = 0
-          socket.emit('want', { slug, name, size, offset })
-          receivedSizeSpan.textContent = formatSize(offset)
-        }
-        node.onContent = ({ offset, buffer }) => {
-          let src = new Uint8Array(buffer)
-          let dest = node.buffer
-          for (let i = 0; i < src.length; i++) {
-            dest[offset + i] = src[i]
+          
+          // Try to use File System Access API for streaming to disk
+          if ('showSaveFilePicker' in window) {
+            try {
+              node.fileHandle = await window.showSaveFilePicker({
+                suggestedName: name,
+              })
+              node.writableStream = await node.fileHandle.createWritable()
+              node.chunks = null // Clear chunks array, using streaming instead
+            } catch (err) {
+              // User cancelled or error, fall back to in-memory approach
+              console.warn('File System Access API not available, using in-memory fallback:', err)
+              node.fileHandle = null
+              node.writableStream = null
+              node.chunks = []
+            }
+          } else {
+            // Browser doesn't support File System Access API
+            // For files larger than a threshold, we'll need a different approach
+            // For now, use chunks array but this will still have RAM limitations
+            if (size > 500e6) { // 500MB threshold
+              alert('Large file detected. File System Access API not supported in this browser. Download may fail for files larger than available RAM.')
+            }
+            node.chunks = []
           }
-          let receivedSize = offset + src.length
-          progressBar.value = receivedSize
-          receivedSizeSpan.textContent = formatSize(receivedSize)
-          if (src.length > 0) {
-            offset += src.length
-            socket.emit('want', { slug, name, size, offset })
+          
+          node.receivedSize = 0
+          socket.emit('want', { slug, name, size, offset: node.receivedSize })
+          receivedSizeSpan.textContent = formatSize(node.receivedSize)
+        }
+        node.onContent = async ({ offset, buffer }) => {
+          let src = new Uint8Array(buffer)
+          node.receivedSize = offset + src.length
+          progressBar.value = node.receivedSize
+          receivedSizeSpan.textContent = formatSize(node.receivedSize)
+          
+          // Write chunk directly to disk if using File System Access API
+          if (node.writableStream) {
+            try {
+              await node.writableStream.write({ type: 'write', position: offset, data: src })
+            } catch (err) {
+              console.error('Error writing chunk:', err)
+              await node.writableStream.close()
+              node.writableStream = null
+              saveButton.disabled = false
+              return
+            }
+          } else if (node.chunks) {
+            // Fallback: store chunk in memory
+            node.chunks.push({ offset, buffer: src.buffer.slice() })
+          }
+          
+          if (src.length > 0 && node.receivedSize < size) {
+            socket.emit('want', { slug, name, size, offset: node.receivedSize })
             return
           }
-          console.log('downloaded:', { slug, name, size })
-          saveButton.disabled = false
-          let arrayBuffer = new Uint8Array(node.buffer)
-          let file = new File([arrayBuffer], name, { type, lastModified })
-          node.buffer = []
-          node.file = file
-          seedFile(file)
-          downloadButton.hidden = true
-          seedingSpan.hidden = false
-          saveButton.onclick = () => {
-            let url = URL.createObjectURL(file)
-            let a = document.createElement('a')
-            a.download = name
-            a.href = url
-            document.body.appendChild(a)
-            a.click()
-            setTimeout(() => {
-              a.remove()
-              URL.revokeObjectURL(url)
-            })
+          
+          if (node.receivedSize >= size) {
+            console.log('downloaded:', { slug, name, size })
+            
+            if (node.writableStream) {
+              // Close the stream and get the file handle
+              await node.writableStream.close()
+              node.writableStream = null
+              saveButton.disabled = false
+              
+              // Read file from disk to create File object for seeding
+              node.fileHandle = node.fileHandle
+              const fileData = await node.fileHandle.getFile()
+              node.file = fileData
+              seedFile(fileData)
+              downloadButton.hidden = true
+              seedingSpan.hidden = false
+              
+              saveButton.onclick = async () => {
+                // Re-open the saved file and download it
+                try {
+                  const file = await node.fileHandle.getFile()
+                  const url = URL.createObjectURL(file)
+                  const a = document.createElement('a')
+                  a.download = name
+                  a.href = url
+                  document.body.appendChild(a)
+                  a.click()
+                  setTimeout(() => {
+                    a.remove()
+                    URL.revokeObjectURL(url)
+                  })
+                } catch (err) {
+                  console.error('Error accessing file:', err)
+                  alert('Error accessing saved file. It may have been moved or deleted.')
+                }
+              }
+            } else if (node.chunks && node.chunks.length > 0) {
+              // Fallback: reconstruct file from chunks in memory
+              // This will still have RAM limitations for very large files
+              node.chunks.sort((a, b) => a.offset - b.offset)
+              let fileBlob = new Blob(node.chunks.map(chunk => chunk.buffer), { type })
+              let file = new File([fileBlob], name, { type, lastModified })
+              node.chunks = null
+              node.file = file
+              seedFile(file)
+              downloadButton.hidden = true
+              seedingSpan.hidden = false
+              
+              saveButton.onclick = () => {
+                let url = URL.createObjectURL(file)
+                let a = document.createElement('a')
+                a.download = name
+                a.href = url
+                document.body.appendChild(a)
+                a.click()
+                setTimeout(() => {
+                  a.remove()
+                  URL.revokeObjectURL(url)
+                })
+              }
+            }
           }
         }
         fileList.appendChild(node)
@@ -276,11 +361,20 @@
         }
         let file = findFile({ name, size })
         if (!file) return
-        let arrayBuffer = await file.getContent()
         let bufferSize = 200e3
-        let buffer = new Uint8Array(
-          arrayBuffer.slice(offset, offset + bufferSize),
-        )
+        let arrayBuffer = await file.readChunk(offset, bufferSize)
+        if (!arrayBuffer) {
+          // Error reading chunk, send empty buffer to signal end
+          socket.emit('content', {
+            slug,
+            name,
+            size,
+            offset,
+            buffer: new ArrayBuffer(0),
+          })
+          return
+        }
+        let buffer = new Uint8Array(arrayBuffer)
         socket.emit('content', { slug, name, size, offset, buffer })
       })
       socket.on('content', ({ slug, name, size, offset, buffer }) => {
