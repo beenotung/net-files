@@ -231,7 +231,7 @@
           progressContainer.hidden = false
           saveButton.hidden = false
           saveButton.disabled = true
-          
+
           // Try to use File System Access API for streaming to disk
           if ('showSaveFilePicker' in window) {
             try {
@@ -256,7 +256,7 @@
             }
             node.chunks = []
           }
-          
+
           node.receivedSize = 0
           socket.emit('want', { slug, name, size, offset: node.receivedSize })
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
@@ -266,7 +266,7 @@
           node.receivedSize = offset + src.length
           progressBar.value = node.receivedSize
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
-          
+
           // Write chunk directly to disk if using File System Access API
           if (node.writableStream) {
             try {
@@ -282,21 +282,21 @@
             // Fallback: store chunk in memory
             node.chunks.push({ offset, buffer: src.buffer.slice() })
           }
-          
+
           if (src.length > 0 && node.receivedSize < size) {
             socket.emit('want', { slug, name, size, offset: node.receivedSize })
             return
           }
-          
+
           if (node.receivedSize >= size) {
             console.log('downloaded:', { slug, name, size })
-            
+
             if (node.writableStream) {
               // Close the stream and get the file handle
               await node.writableStream.close()
               node.writableStream = null
               saveButton.disabled = false
-              
+
               // Read file from disk to create File object for seeding
               node.fileHandle = node.fileHandle
               const fileData = await node.fileHandle.getFile()
@@ -304,7 +304,7 @@
               seedFile(fileData)
               downloadButton.hidden = true
               seedingSpan.hidden = false
-              
+
               saveButton.onclick = async () => {
                 // Re-open the saved file and download it
                 try {
@@ -335,7 +335,7 @@
               seedFile(file)
               downloadButton.hidden = true
               seedingSpan.hidden = false
-              
+
               saveButton.onclick = () => {
                 let url = URL.createObjectURL(file)
                 let a = document.createElement('a')
