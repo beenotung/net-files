@@ -147,7 +147,7 @@
       autoSync()
       function toHex(buffer) {
         return Array.from(new Uint8Array(buffer))
-          .map(byte => byte.toString(16).padStart(2, '0'))
+          .map(byte => byte.toString(16).padStart(2, '0').toLowerCase())
           .join('')
       }
       async function hashBlob(blob) {

@@ -4,17 +4,20 @@ import socketIO from 'socket.io'
 import http from 'http'
 import { join } from 'path'
 import { env } from './env'
+import { object, number, string, ParseResult } from 'cast.ts'
 
 let app = express()
 let server = http.createServer(app)
 let io = new socketIO.Server(server)
 
-type FileMeta = {
-  size: number
-  type: string
-  lastModified: number
-  hash: string
-}
+let fileMetaParser = object({
+  size: number(),
+  type: string(),
+  lastModified: number(),
+  hash: string({ minLength: 64, maxLength: 64, match: /^[0-9a-fA-F]+$/ }),
+})
+type FileMeta = ParseResult<typeof fileMetaParser>
+
 // slug -> name -> FileMeta
 let rooms: Record<string, Record<string, FileMeta>> = {}
 
@@ -33,11 +36,8 @@ io.on('connection', socket => {
     socket.leave('slug:' + slug)
   })
   socket.on('has', data => {
-    let { slug, name, ...fileMeta } = data
-    if (!fileMeta.hash) {
-      console.warn('rejecting file announce without hash:', { slug, name })
-      return
-    }
+    let { slug, name, ..._fileMeta } = data
+    let fileMeta = fileMetaParser.parse(_fileMeta)
     let room = (rooms[slug] ||= {})
     room[name] = fileMeta
     io.to('slug:' + slug).emit('has', data)
