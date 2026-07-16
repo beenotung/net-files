@@ -13,6 +13,7 @@ type FileMeta = {
   size: number
   type: string
   lastModified: number
+  hash: string
 }
 // slug -> name -> FileMeta
 let rooms: Record<string, Record<string, FileMeta>> = {}
@@ -33,6 +34,10 @@ io.on('connection', socket => {
   })
   socket.on('has', data => {
     let { slug, name, ...fileMeta } = data
+    if (!fileMeta.hash) {
+      console.warn('rejecting file announce without hash:', { slug, name })
+      return
+    }
     let room = (rooms[slug] ||= {})
     room[name] = fileMeta
     io.to('slug:' + slug).emit('has', data)

@@ -15,8 +15,28 @@
       .file-size::after {
         content: ')';
       }
+      .remove-menu {
+        display: inline;
+      }
+      .file-hash {
+        display: block;
+        font-family: monospace;
+        font-size: 0.85em;
+        color: #555;
+        margin-top: 0.15rem;
+        cursor: pointer;
+        word-break: break-all;
+        user-select: none;
+      }
+      .file-hash.expanded {
+        user-select: text;
+      }
       .file {
         margin-bottom: 1rem;
+      }
+      .hash-error {
+        color: #b00020;
+        margin-top: 0.25rem;
       }
       h1 sub {
         font-size: 1rem;
@@ -26,6 +46,9 @@
         background-color: lightgray;
         padding: 0.2rem;
         border-radius: 0.2rem;
+      }
+      [hidden] {
+        display: none !important;
       }
     </style>
   </head>
@@ -74,13 +97,18 @@
           </button>
           <button class="cancel-remove-button">cancel removal</button>
         </div>
+        <button class="save-button">save</button>
+        <div class="file-hash" title="Click to show full hash">abcd1234…</div>
         <div class="progress-container">
           <div>
             <span class="received-size"></span>/<span class="total-size"></span>
           </div>
           <progress></progress>
         </div>
-        <button class="save-button">save</button>
+        <div class="hash-error" hidden>
+          checksum failed — file discarded.
+          <button class="retry-button">retry</button>
+        </div>
       </div>
     </div>
     <h2>About</h2>
@@ -117,6 +145,48 @@
         autoSync()
       })
       autoSync()
+      function toHex(buffer) {
+        return Array.from(new Uint8Array(buffer))
+          .map(byte => byte.toString(16).padStart(2, '0'))
+          .join('')
+      }
+      async function hashBlob(blob) {
+        let buffer = await blob.arrayBuffer()
+        let digest = await crypto.subtle.digest('SHA-256', buffer)
+        return toHex(digest)
+      }
+      async function ensureFileHash(file) {
+        if (file.contentHash) return file.contentHash
+        let hash = await hashBlob(file)
+        file.contentHash = hash
+        return hash
+      }
+      function formatHash(hash) {
+        if (!hash) return ''
+        if (hash.length <= 12) return hash
+        return hash.slice(0, 8) + '…'
+      }
+      function setFileHashDisplay(node, hash) {
+        let hashEl = node.querySelector('.file-hash')
+        hashEl.dataset.hash = hash
+        hashEl.classList.remove('expanded')
+        hashEl.textContent = formatHash(hash)
+        hashEl.title = 'Click to show full hash'
+        hashEl.onclick = () => {
+          let expanded = hashEl.classList.toggle('expanded')
+          hashEl.textContent = expanded ? hash : formatHash(hash)
+          hashEl.title = expanded
+            ? 'Click to collapse'
+            : 'Click to show full hash'
+        }
+      }
+      function findFileNodeByName(name) {
+        for (let node of fileList.children) {
+          if (node.dataset.name == name) {
+            return node
+          }
+        }
+      }
       function updateFileList() {
         for (let node of fileList.children) {
           // check for receiving files
@@ -146,26 +216,35 @@
       }
       function seedFile(file) {
         let slug = slugInput.value
-        console.log('seeding:', { slug, file })
-        socket.emit('has', {
-          slug,
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          lastModified: file.lastModified,
-        })
-        file.readChunk = (offset, length) => {
-          return new Promise(resolve => {
-            let reader = new FileReader()
-            reader.onload = () => {
-              resolve(reader.result)
-            }
-            reader.onerror = () => {
-              resolve(null)
-            }
-            let blob = file.slice(offset, offset + length)
-            reader.readAsArrayBuffer(blob)
+        ensureFileHash(file)
+          .then(hash => {
+            console.log('seeding:', { slug, file, hash })
+            socket.emit('has', {
+              slug,
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              lastModified: file.lastModified,
+              hash,
+            })
           })
+          .catch(err => {
+            console.error('Failed to hash file for seeding:', err)
+          })
+        if (!file.readChunk) {
+          file.readChunk = (offset, length) => {
+            return new Promise(resolve => {
+              let reader = new FileReader()
+              reader.onload = () => {
+                resolve(reader.result)
+              }
+              reader.onerror = () => {
+                resolve(null)
+              }
+              let blob = file.slice(offset, offset + length)
+              reader.readAsArrayBuffer(blob)
+            })
+          }
         }
       }
       function retrieve() {
@@ -178,20 +257,40 @@
       }
       let fileTemplate = fileList.children[0]
       fileTemplate.remove()
-      socket.on('has', ({ slug, name, size, type, lastModified }) => {
+      socket.on('has', ({ slug, name, size, type, lastModified, hash }) => {
         if (slug != slugInput.value) {
           socket.emit('leave', slug)
           return
         }
-        let node = findFileNode({ name, size })
-        if (node) {
+        if (!hash) {
+          console.warn('ignoring file announce without hash:', { slug, name })
           return
+        }
+        let node = findFileNodeByName(name)
+        if (node) {
+          // Same name overwrite: keep one entry; refresh if meta changed
+          if (
+            String(node.dataset.size) == String(size) &&
+            node.expectedHash == hash
+          ) {
+            return
+          }
+          console.log('overwriting file announce by name:', {
+            name,
+            previousSize: node.dataset.size,
+            previousHash: node.expectedHash,
+            size,
+            hash,
+          })
+          node.remove()
         }
         node = fileTemplate.cloneNode(true)
         node.dataset.name = name
         node.dataset.size = size
+        node.expectedHash = hash
         node.querySelector('.file-name').textContent = name
         node.querySelector('.file-size').textContent = formatSize(size)
+        setFileHashDisplay(node, hash)
         let downloadButton = node.querySelector('.download-button')
         let removeButton = node.querySelector('.remove-button')
         let removeMenu = node.querySelector('.remove-menu')
@@ -212,6 +311,8 @@
           removeMenu.hidden = true
         }
         let saveButton = node.querySelector('.save-button')
+        let hashError = node.querySelector('.hash-error')
+        let retryButton = node.querySelector('.retry-button')
         let progressContainer = node.querySelector('.progress-container')
         let receivedSizeSpan = node.querySelector('.received-size')
         let progressBar = node.querySelector('progress')
@@ -227,6 +328,7 @@
         node.chunks = [] // Fallback: store chunks if File System Access API not available
         node.contentQueue = Promise.resolve() // Serialize chunk processing
         progressContainer.hidden = true
+        hashError.hidden = true
         downloadButton.hidden = !!file
         seedingSpan.hidden = !file
         // Show save button for files that are already available locally (seeding)
@@ -329,9 +431,15 @@
         }
 
         downloadButton.onclick = async () => {
+          if (!node.expectedHash) {
+            console.error('cannot download without hash:', { name })
+            hashError.hidden = false
+            return
+          }
           progressContainer.hidden = false
           saveButton.hidden = false
           saveButton.disabled = true
+          hashError.hidden = true
           node.downloadAborted = false
 
           await cleanupStreams()
@@ -494,12 +602,65 @@
             return // No file to complete
           }
 
+          if (!node.expectedHash) {
+            console.error('missing expected hash after download:', { name })
+            await discardCorruptDownload()
+            return
+          }
+
+          let actualHash = await hashBlob(file)
+          if (actualHash !== node.expectedHash) {
+            console.error('checksum mismatch:', {
+              name,
+              expected: node.expectedHash,
+              actual: actualHash,
+            })
+            await discardCorruptDownload()
+            return
+          }
+          file.contentHash = actualHash
+          console.log(`[Checksum OK] SHA-256 matched for: ${name}`)
+
           node.file = file
           seedFile(file)
           downloadButton.hidden = true
           seedingSpan.hidden = false
           saveButton.disabled = false
+          hashError.hidden = true
           saveButton.onclick = createSaveButtonHandler(file)
+        }
+
+        async function discardCorruptDownload() {
+          node.file = null
+          node.chunks = null
+          node.receivedSize = 0
+          node.nextOffset = 0
+          node.lastWriteOffset = 0
+          progressBar.value = 0
+          receivedSizeSpan.textContent = formatSize(0)
+          progressContainer.hidden = true
+          saveButton.hidden = true
+          saveButton.disabled = true
+          seedingSpan.hidden = true
+          downloadButton.hidden = false
+          hashError.hidden = false
+
+          if (node.fileHandle) {
+            try {
+              // Truncate the corrupt file on disk
+              let writable = await node.fileHandle.createWritable()
+              await writable.close()
+            } catch (err) {
+              console.warn('Failed to truncate corrupt file:', err)
+            }
+            node.fileHandle = null
+          }
+          node.writableStream = null
+        }
+
+        retryButton.onclick = () => {
+          hashError.hidden = true
+          downloadButton.click()
         }
 
         node.onContent = ({ offset, buffer }) => {
