@@ -2,14 +2,8 @@ import express from 'express'
 import { print } from 'listening-on'
 import socketIO from 'socket.io'
 import http from 'http'
-import { config } from 'dotenv'
 import { join } from 'path'
-
-config()
-let port = +process.env.PORT! || 8100
-for (let arg of process.argv.slice(2)) {
-  port = +arg || port
-}
+import { env } from './env'
 
 let app = express()
 let server = http.createServer(app)
@@ -66,6 +60,6 @@ app.use(express.static(join(__dirname, '..', 'public')))
 app.use(express.json())
 app.use(express.urlencoded({ extended: false }))
 
-server.listen(port, () => {
-  print(port)
+server.listen(env.PORT, () => {
+  print(env.PORT)
 })
