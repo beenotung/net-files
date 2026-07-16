@@ -464,7 +464,13 @@
           node.receivedSize = 0
           node.nextOffset = 0
           node.contentQueue = Promise.resolve()
-          socket.emit('want', { slug, name, size, offset: node.receivedSize })
+          socket.emit('want', {
+            slug,
+            name,
+            size,
+            hash: node.expectedHash,
+            offset: node.receivedSize,
+          })
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
         }
         // Helper function to switch from stream to memory fallback
@@ -698,6 +704,7 @@
                 slug,
                 name,
                 size,
+                hash: node.expectedHash,
                 offset: node.nextOffset,
               })
             }
@@ -733,6 +740,7 @@
               slug,
               name,
               size,
+              hash: node.expectedHash,
               offset: node.receivedSize,
             })
             return
@@ -746,11 +754,12 @@
         fileList.appendChild(node)
       })
 
-      socket.on('want', async ({ slug, name, size, offset }) => {
+      socket.on('want', async ({ slug, name, size, offset, from }) => {
         if (slug != slugInput.value) {
           socket.emit('leave', slug)
           return
         }
+        if (!from) return
         let file = findFile({ name, size })
         if (!file) return
         let bufferSize = 200e3
@@ -763,11 +772,12 @@
             size,
             offset,
             buffer: new ArrayBuffer(0),
+            to: from,
           })
           return
         }
         let buffer = new Uint8Array(arrayBuffer)
-        socket.emit('content', { slug, name, size, offset, buffer })
+        socket.emit('content', { slug, name, size, offset, buffer, to: from })
       })
       socket.on('content', ({ slug, name, size, offset, buffer }) => {
         if (slug != slugInput.value) {
