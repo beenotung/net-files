@@ -220,10 +220,12 @@
         let seedingSpan = node.querySelector('.seeding')
         let file = findFile({ name, size })
         node.receivedSize = 0
+        node.nextOffset = 0 // Only accept sequential chunks (ignore duplicates from multi-seeder)
         node.fileHandle = null
         node.writableStream = null
         node.lastWriteOffset = 0 // Track write position for streaming
         node.chunks = [] // Fallback: store chunks if File System Access API not available
+        node.contentQueue = Promise.resolve() // Serialize chunk processing
         progressContainer.hidden = true
         downloadButton.hidden = !!file
         seedingSpan.hidden = !file
@@ -258,6 +260,7 @@
           }
           node.fileHandle = null
           node.lastWriteOffset = 0
+          node.nextOffset = 0
           node.chunks = null
         }
 
@@ -273,6 +276,7 @@
             })
             node.writableStream = await node.fileHandle.createWritable()
             node.lastWriteOffset = 0
+            node.nextOffset = 0
             node.chunks = null
             console.log(
               `[File System API] Using File System Access API for streaming: ${name} (${formatSize(
@@ -350,21 +354,47 @@
 
           // Start download
           node.receivedSize = 0
+          node.nextOffset = 0
+          node.contentQueue = Promise.resolve()
           socket.emit('want', { slug, name, size, offset: node.receivedSize })
           receivedSizeSpan.textContent = formatSize(node.receivedSize)
         }
         // Helper function to switch from stream to memory fallback
+        // Preserves bytes already written to disk so the file is not truncated.
         async function switchToMemoryFallback() {
-          if (node.writableStream) {
+          let existingChunks = []
+          if (node.fileHandle && node.lastWriteOffset > 0) {
+            try {
+              if (node.writableStream) {
+                await node.writableStream.close()
+                node.writableStream = null
+              }
+              let written = await node.fileHandle.getFile()
+              let buf = await written.arrayBuffer()
+              if (buf.byteLength > 0) {
+                existingChunks.push({ offset: 0, buffer: buf })
+              }
+            } catch (err) {
+              console.error('Error reading written data during fallback:', err)
+              if (node.writableStream) {
+                try {
+                  await node.writableStream.close()
+                } catch (closeErr) {
+                  console.error('Error closing stream:', closeErr)
+                }
+                node.writableStream = null
+              }
+            }
+          } else if (node.writableStream) {
             try {
               await node.writableStream.close()
             } catch (err) {
               console.error('Error closing stream:', err)
             }
             node.writableStream = null
-            node.fileHandle = null
           }
-          if (!node.chunks) node.chunks = []
+          node.fileHandle = null
+          node.chunks = existingChunks
         }
 
         // Helper function to write chunk to File System API
@@ -384,10 +414,12 @@
           return true
         }
 
-        // Helper function to store chunk in memory
+        // Helper function to store chunk in memory (copy only this view's bytes)
         function storeInMemory(src, offset) {
           if (!node.chunks) node.chunks = []
-          node.chunks.push({ offset, buffer: src.buffer.slice() })
+          // Avoid src.buffer.slice() — that can copy the whole underlying ArrayBuffer
+          let copy = src.slice()
+          node.chunks.push({ offset, buffer: copy.buffer })
         }
 
         // Helper function to create save button handler
@@ -444,10 +476,15 @@
               `[Fallback Mode] Reconstructing file from chunks in memory: ${name} (${node.chunks.length} chunks)`,
             )
             node.chunks.sort((a, b) => a.offset - b.offset)
-            const fileBlob = new Blob(
-              node.chunks.map(chunk => chunk.buffer),
-              { type },
-            )
+            // Drop duplicate offsets (can happen if multiple seeders reply)
+            let parts = []
+            let lastOffset = -1
+            for (let chunk of node.chunks) {
+              if (chunk.offset === lastOffset) continue
+              lastOffset = chunk.offset
+              parts.push(chunk.buffer)
+            }
+            let fileBlob = new Blob(parts, { type })
             file = new File([fileBlob], name, { type, lastModified })
             node.chunks = null
             console.log(
@@ -465,7 +502,17 @@
           saveButton.onclick = createSaveButtonHandler(file)
         }
 
-        node.onContent = async ({ offset, buffer }) => {
+        node.onContent = ({ offset, buffer }) => {
+          // Serialize chunk handling so concurrent replies from multiple seeders
+          // cannot interleave writes / progress updates.
+          node.contentQueue = node.contentQueue
+            .then(() => processContent({ offset, buffer }))
+            .catch(err => {
+              console.error('Error processing content chunk:', err)
+            })
+        }
+
+        async function processContent({ offset, buffer }) {
           if (node.downloadAborted) {
             console.log(
               `[Aborted] Ignoring chunk for aborted download: ${name}`,
@@ -473,10 +520,28 @@
             return
           }
 
-          const src = new Uint8Array(buffer)
-          node.receivedSize = offset + src.length
-          progressBar.value = node.receivedSize
-          receivedSizeSpan.textContent = formatSize(node.receivedSize)
+          // Ignore duplicates / out-of-order chunks from other seeders
+          if (offset !== node.nextOffset) {
+            console.log(
+              `[Skip] Ignoring chunk at offset ${offset}, expected ${node.nextOffset}: ${name}`,
+            )
+            return
+          }
+
+          let src = new Uint8Array(buffer)
+
+          // Empty buffer = seeder failed to read; re-request without advancing
+          if (src.length === 0) {
+            if (node.nextOffset < size && !node.downloadAborted) {
+              socket.emit('want', {
+                slug,
+                name,
+                size,
+                offset: node.nextOffset,
+              })
+            }
+            return
+          }
 
           // Write chunk to appropriate storage
           if (node.writableStream) {
@@ -496,10 +561,19 @@
             storeInMemory(src, offset)
           }
 
+          node.nextOffset = offset + src.length
+          node.receivedSize = node.nextOffset
+          progressBar.value = node.receivedSize
+          receivedSizeSpan.textContent = formatSize(node.receivedSize)
+
           // Request next chunk if download is in progress
-          const hasMore = src.length > 0 && node.receivedSize < size
-          if (hasMore && !node.downloadAborted) {
-            socket.emit('want', { slug, name, size, offset: node.receivedSize })
+          if (node.receivedSize < size && !node.downloadAborted) {
+            socket.emit('want', {
+              slug,
+              name,
+              size,
+              offset: node.receivedSize,
+            })
             return
           }
 
