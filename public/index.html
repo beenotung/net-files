@@ -762,7 +762,7 @@
         if (!from) return
         let file = findFile({ name, size })
         if (!file) return
-        let bufferSize = 200e3
+        let bufferSize = 512e3
         let arrayBuffer = await file.readChunk(offset, bufferSize)
         if (!arrayBuffer) {
           // Error reading chunk, send empty buffer to signal end
